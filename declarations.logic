@@ -1,0 +1,68 @@
+#include "macros.logic"
+// For this analysis, there are no contexts, so this is
+// what the initial system objects should have.
+MySystemThreadGroup(?heap) -> HeapAllocationRef(?heap).
+
+MyMainThreadGroup(?heap) -> HeapAllocationRef(?heap).
+
+MyMainThread(?heap) -> HeapAllocationRef(?heap).
+
+
+/*
+ * Contexts
+ */
+
+Context(?ctx), Context:Value(?ctx:?s) -> string(?s).
+
+
+
+/*
+ * Declarations
+ */
+
+ArrayIndexPointsTo( ?baseheap, ?heap ) ->
+	HeapAllocationRef( ?baseheap ),
+	HeapAllocationRef( ?heap ).
+
+VarPointsTo( ?heap, ?var ) ->
+	HeapAllocationRef( ?heap ),
+	VarRef( ?var ).
+
+InstanceFieldPointsTo( ?heap, ?signature, ?baseheap ) ->
+        HeapAllocationRef( ?heap ),
+	FieldSignatureRef( ?signature ),
+	HeapAllocationRef( ?baseheap ).
+
+StaticFieldPointsTo( ?heap, ?signature ) ->
+	HeapAllocationRef( ?heap ),
+	FieldSignatureRef( ?signature ).
+
+Assign( ?type, ?from, ?to ) ->
+	Type( ?type ),
+	VarRef( ?from ),
+	VarRef( ?to ).
+
+Reachable( ?method ) ->
+        MethodSignatureRef( ?method ).
+
+CallGraphEdge(?invocation, ?tomethod) ->
+			   MethodInvocationRef(?invocation),
+			   MethodSignatureRef(?tomethod).
+
+AssignNormalHeapAllocation(?heap, ?var, ?inmethod) ->
+  HeapAllocationRef(?heap), VarRef(?var), MethodSignatureRef(?inmethod).
+
+AssignAuxiliaryHeapAllocation(?heap, ?var, ?inmethod) ->
+  HeapAllocationRef(?heap), VarRef(?var), MethodSignatureRef(?inmethod).
+
+AssignContextInsensitiveHeapAllocation(?heap, ?var, ?inmethod) ->
+  HeapAllocationRef(?heap), VarRef(?var), MethodSignatureRef(?inmethod).
+
+SystemThreadGroup( ?heap) ->
+  HeapAllocationRef(?heap).
+
+MainThreadGroup( ?heap) ->
+   HeapAllocationRef(?heap).
+
+MainThread( ?heap) ->
+  HeapAllocationRef(?heap).

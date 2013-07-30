@@ -1,0 +1,327 @@
+/*************************************************************
+ * Implementation of points-to propagation for concrete,
+ * non-reflective, operations that have been discoved using
+ * reflection.
+ *
+ * @author Martin Bravenboer
+ *************************************************************/
+
+
+/*************************************************************
+ * Reflective method calls
+ *
+ * Issues in the documentation:
+ *   - Class.getDeclaredMethods does not specify that <init> is not returned.
+ *   - Method.invoke does not specify that private method calls do not do method lookup
+ *   - It is impossible to call an overridden method in a super class.
+ *
+ * Issues in Livshits' reflection analysis:
+ *   - no dynamic method lookup for instance methods (interface, abstract, overriden)
+ *   - no handling of exceptions
+ *   - unclear how to make context-sensitive
+ *   - not sound for reflective use of reflection
+ *   - no handling of boxing/unboxing
+ *
+ * Test:
+ *   - static initialization
+ *   - context-sensivitity
+ *   - virtual method lookup
+ *   - method declared in class of objParam
+ *
+ * TODO Boxing of primitive results
+ *
+ *************************************************************/
+
+/**
+ * Method invocations resulting from propagating Method and
+ * Constructor objects to reflective method invocations.
+ *
+ * As opposed to method invocations in the input facts, these must be
+ * context-sensitive for precision purposes: for a reflective method
+ * call sites, the invoked method can depend on the context.
+ */
+ReflectiveMethodInvocation(Context(?ctx, ?caller), ?signature) ->
+  DeclareContext(?ctx, MethodInvocationRef(?caller)),
+  MethodSignatureRef(?signature).
+
+/**
+ * The base variable of a reflective method call.
+ */
+ReflectiveBaseVar[?caller] = ?base ->
+  MethodInvocationRef(?caller),
+  VarRef(?base).
+
+/**
+ * The return variable of a reflective method call.
+ */
+ReflectiveAssignReturnValue[?caller] = ?base ->
+  MethodInvocationRef(?caller),
+  VarRef(?base).
+
+/**
+ * The variable that points-to an array of actual parameters of a
+ * reflective method call.
+ */
+ReflectiveActualParams[?caller] = ?actualParams ->
+  MethodInvocationRef(?caller),
+  VarRef(?actualParams).
+
+/*************************************************************
+ * Specific reflective method invocations
+ * 
+ * Reflective method invocations need to be specialized to determine
+ * what kind of method call this is.
+ *
+ *************************************************************/
+
+ReflectiveSpecialMethodInvocation(Context(?ctx, ?caller), ?signature) ->
+  DeclareContext(?ctx, MethodInvocationRef(?caller)),
+  MethodSignatureRef(?signature).
+
+ReflectiveStaticMethodInvocation(Context(?ctx, ?caller), ?signature) ->
+  DeclareContext(?ctx, MethodInvocationRef(?caller)),
+  MethodSignatureRef(?signature).
+
+/* YANNIS: reordered */
+ReflectiveVirtualMethodInvocation(?signature, Context(?ctx, ?caller)) ->
+  DeclareContext(?ctx, MethodInvocationRef(?caller)),
+  MethodSignatureRef(?signature).
+
+/**
+ * Private method invocations are special methods, unless they are static.
+ *
+ * Note that (for now) the other special method invocation cases are
+ * not possible: 1) instance initialization methods cannot be invoked
+ * reflectively using Method.invoke and 2) overriden superclass
+ * methods cannot be invoked through reflection.
+ */
+ReflectiveSpecialMethodInvocation(Context(?ctx, ?caller), ?signature) <-
+  ReflectiveMethodInvocation(Context(?ctx, ?caller), ?signature),
+  ModifierRef:Value(?private:"private"),
+  MethodModifier(?private, ?signature),
+  ModifierRef:Value(?static:"static"),
+  ! MethodModifier(?static, ?signature).
+
+/**
+ * Static method invocations
+ */
+ReflectiveStaticMethodInvocation(Context(?ctx, ?caller), ?signature) <-
+  ReflectiveMethodInvocation(Context(?ctx, ?caller), ?signature),
+  ModifierRef:Value(?static:"static"),
+  MethodModifier(?static, ?signature).
+
+/**
+ * All others are virtual method invocations
+ */
+ReflectiveVirtualMethodInvocation(?signature, Context(?ctx, ?caller)) <-
+  ReflectiveMethodInvocation(Context(?ctx, ?caller), ?signature),
+  ModifierRef:Value(?private:"private"),
+  ! MethodModifier(?private, ?signature),
+  ModifierRef:Value(?static:"static"),
+  ! MethodModifier(?static, ?signature).
+
+/*************************************************************
+ * Reflective call graph edges
+ *
+ * TODO Unfortunately we have to redo the implementation of method
+ *      calls here. It might be a good idea to consider generation of
+ *      method invocations (but those are input predicates).
+ *
+ *************************************************************/
+
+/**
+ * A reflective call graph edge has specific details for propagating
+ * parameters and handling return values, so we distinguish them from
+ * native and normal call graph edges.
+ */
+ReflectiveCallGraphEdge(Context(?callerCtx, ?caller), Context(?calleeCtx, ?callee)) ->
+  DeclareContext(?callerCtx, MethodInvocationRef(?caller)),
+  DeclareContext(?calleeCtx, MethodSignatureRef(?callee)).
+
+ReachableContext(Context(?calleeCtx, ?callee)) <-
+  ReflectiveCallGraphEdge(AnyContext(_), Context(?calleeCtx, ?callee)).
+
+/**
+ * Static methods
+ *
+ * TODO Macro for context
+ */
+ReflectiveCallGraphEdge(Context(?callerCtx, ?caller), Context(?callerCtx, ?callee)) <-
+  ReflectiveStaticMethodInvocation(Context(?callerCtx, ?caller), ?callee).
+
+/**
+ * Special methods
+ *
+ * TODO Check if object is an instance of the class declaring the
+ *      method (only overapproximation)
+ *
+ * TODO Macro for context
+ */
+ReflectiveCallGraphEdge(Context(?callerCtx, ?caller), Context(?callerCtx, ?callee)),
+VarPointsTo(HeapContext(?heapCtx, ?heap), Context(?callerCtx, ?this))
+  <-
+  ReflectiveBaseVar[?caller] = ?base, // TODO make ?caller specific
+  VarPointsTo(HeapContext(?heapCtx, ?heap),  Context(?callerCtx, ?base)), // recursive
+  ReflectiveSpecialMethodInvocation(Context(?callerCtx, ?caller), ?callee),  // recursive // TODO switch order
+  ThisVar[?callee] = ?this.
+
+/**
+ * Virtual methods
+ *
+ * TODO Check if object is an instance of the class declaring the
+ *      method (only overapproximation)
+ *
+ * TODO Macro for context
+ */
+ReflectiveCallGraphEdge(Context(?callerCtx, ?caller), Context(?callerCtx, ?tomethod)),
+VarPointsTo(HeapContext(?heap, ?heap), Context(?callerCtx, ?this))
+  <-
+  ReflectiveBaseVar[?caller] = ?base,
+  VarPointsTo(HeapContext(?heap, ?heap), Context(?callerCtx, ?base)), // recursive
+  ReflectiveVirtualMethodInvocation(?signature, Context(?callerCtx, ?caller)),  // recursive
+  HeapAllocation:Type[?heap] = ?heaptype,
+  MethodSignature:Type[?signature] = ?type,
+  AssignCompatible(?type, ?heaptype), // TODO need nicer check
+  MethodSignature:SimpleName[?signature] = ?simplename,
+  MethodSignature:Descriptor[?signature] = ?descriptor,
+  MethodLookup[?simplename, ?descriptor, ?heaptype] = ?tomethod,
+  ThisVar[?tomethod] = ?this.
+
+/**
+ * Return values of reflective method invocations
+ */
+Assign(?type, Context(?callerCtx, ?local), Context(?calleeCtx, ?return)) <-
+  ReturnVar(?return, ?callee),
+  ReflectiveCallGraphEdge(Context(?callerCtx, ?invocation), Context(?calleeCtx, ?callee)),
+  ReflectiveAssignReturnValue[?invocation] = ?local,
+  Var:Type[?local] = ?type.
+
+ReflectiveLoadArrayIndex(Context(?calleeCtx, ?formal), Context(?callerCtx, ?actual)) <-
+  ReflectiveCallGraphEdge(Context(?callerCtx, ?invocation), Context(?calleeCtx, ?callee)),
+  FormalParam[_, ?callee] = ?formal,
+  ReflectiveActualParams[?invocation] = ?actual.
+
+/*************************************************************
+ *
+ * Reflective heap allocations
+ *
+ *************************************************************/
+
+ReflectiveAssignHeapAllocation(?instruction, ?type, Context(?ctx, ?var)) ->
+  DeclareContext(?ctx, VarRef(?var)),
+  Type(?type),
+  InstructionRef(?instruction).
+
+InitializedClass(?type),
+VarPointsTo(HeapContext(?heapCtx, ?heap), Context(?ctx, ?var)) <-
+  ReflectiveAssignHeapAllocation(?instruction, ?type, Context(?ctx, ?var)), // recursive
+  ReflectiveHeapAllocation[?instruction, ?type]  = ?heap,
+  BindHeapContext(?heapCtx, ?heap, ?ctx).
+
+/*************************************************************
+ *
+ * Reflective assignment of class constants
+ *
+ *************************************************************/
+
+ReflectiveAssignClassConstant(Context(?ctx, ?invocation), ?type) ->
+  DeclareContext(?ctx, MethodInvocationRef(?invocation)),
+  Type(?type).
+
+/**
+ * Not every virtual method invocation has a return value, so we need
+ * to initialize classes separate from the VarPointsTo rule.
+ */
+InitializedClass(?type) <-
+  ReflectiveAssignClassConstant(AnyContext(_), ?type).
+
+/**
+ * TODO This doesn't make any sense without a 'to' variable.
+ */
+VarPointsTo(HeapContext(?imm, ?heap), Context(?ctx, ?return)) <-
+  ReflectiveAssignClassConstant(Context(?ctx, ?invocation), ?type),
+  ReifiedClass[?type] = ?heap,
+  AssignReturnValue[?invocation] = ?return,
+  BindImmutableHeapContext(?imm, ?ctx, ?heap).
+
+/*************************************************************
+ *
+ * Reflective load of array index.
+ *
+ *************************************************************/
+
+ReflectiveLoadArrayIndex(Context(?calleeCtx, ?to), Context(?callerCtx, ?base)) ->
+  DeclareContext(?calleeCtx, VarRef(?to)),
+  DeclareContext(?callerCtx, VarRef(?base)).
+
+/**
+ * TODO it's unfortunate this code is so similar to normal LoadArrayIndex.
+ */
+LoadHeapArrayIndex(Context(?calleeCtx, ?to), HeapAbstraction(?baseheap)) <-
+  ReflectiveLoadArrayIndex(Context(?calleeCtx, ?to), Context(?callerCtx, ?base)),
+  VarPointsTo(
+    HeapAbstraction(?baseheap),
+    Context(?callerCtx, ?base)
+  ).
+
+/*************************************************************
+ *
+ * Reflective load of a static field
+ *
+ * TODO does this trigger class initialization?
+ *
+ *************************************************************/
+
+ReflectiveLoadStaticField(Context(?ctx, ?var), ?signature) ->
+  FieldSignatureRef(?signature),
+  DeclareContext(?ctx, VarRef(?var)).
+
+VarPointsTo(HeapAbstraction(?heap), Context(?ctx, ?var)) <-
+  ReflectiveLoadStaticField(Context(?ctx, ?var), ?signature),
+  StaticFieldPointsTo(HeapAbstraction(?heap), ?signature).
+
+/*************************************************************
+ *
+ * Reflective store of a static field
+ *
+ * TODO does this trigger class initialization?
+ *
+ *************************************************************/
+
+ReflectiveStoreStaticField(?signature, Context(?ctx, ?var)) ->
+  FieldSignatureRef(?signature),
+  DeclareContext(?ctx, VarRef(?var)).
+
+StaticFieldPointsTo(HeapAbstraction(?heap), ?signature) <-
+  ReflectiveStoreStaticField(?signature, Context(?ctx, ?var)),
+  VarPointsTo(HeapAbstraction(?heap), Context(?ctx, ?var)).
+
+/*************************************************************
+ *
+ * Reflective load of an instance field
+ *
+ *************************************************************/
+
+ReflectiveLoadInstanceField(Context(?toCtx, ?to), ?signature, Context(?baseCtx, ?base)) ->
+  DeclareContext(?baseCtx, VarRef(?base)),
+  FieldSignatureRef(?signature),
+  DeclareContext(?toCtx, VarRef(?to)).
+
+LoadHeapInstanceField(Context(?toCtx, ?to), ?sig, HeapAbstraction(?baseheap)) <-
+  ReflectiveLoadInstanceField(Context(?toCtx, ?to), ?sig, Context(?baseCtx, ?base)),
+  VarPointsTo(HeapAbstraction(?baseheap), Context(?baseCtx, ?base)).
+
+/*************************************************************
+ *
+ * Reflective store of an instance field
+ *
+ *************************************************************/
+
+ReflectiveStoreInstanceField(Context(?fromCtx, ?from), ?signature, Context(?baseCtx, ?base)) ->
+  DeclareContext(?fromCtx, VarRef(?from)),
+  DeclareContext(?baseCtx, VarRef(?base)),
+  FieldSignatureRef(?signature).
+
+StoreHeapInstanceField(?signature, HeapAbstraction(?baseheap), Context(?fromCtx, ?from)) <-
+  ReflectiveStoreInstanceField(Context(?fromCtx, ?from), ?signature, Context(?baseCtx, ?base)),
+  VarPointsTo(HeapAbstraction(?baseheap), Context(?baseCtx, ?base)).
